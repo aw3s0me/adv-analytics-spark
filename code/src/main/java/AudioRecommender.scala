@@ -1,4 +1,8 @@
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.ml.recommendation.{ALS, ALSModel}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+
+import scala.util.Random
 
 /**
   * Created by akorovin on 28.12.2016.
@@ -24,6 +28,21 @@ object AudioRecommender {
     val recommender = new AudioRecommender(spark)
     val cleanedData = recommender.preparation(rawUserArtistData, rawArtistData, rawArtistAlias)
     println(cleanedData.userArtistDF.schema)
+    // BROADCAST, to avoid sending sharing data
+    // when broadcast we send and store in memory only one copy for each executor (host) in cluster
+    // WHY? thousands of tasks that are executed in parallel (in many stages)
+    // HOW: 1) cache data as raw java obj 2) cache data across multiple jobs-stages
+    val bAliases = spark.sparkContext.broadcast(cleanedData.aliases)
+
+    // create data with counts (TRAIN DATA) and cache it in memory
+    // WHY CACHING? USEFUL for ALS (because ALS is iterative)
+    val countsTrainData = recommender.buildCounts(rawUserArtistData, bAliases).cache()
+    val model = recommender.model(countsTrainData)
+
+    countsTrainData.unpersist()
+
+    // showing feature vector of 10 values
+    model.userFactors.select("features").show(truncate = false)
   }
 }
 
@@ -35,6 +54,13 @@ class AudioRecommender(private val spark: SparkSession) {
   // without import gives exception
   import spark.implicits._
 
+  /**
+    * Clean data and create needed dataframes and alias map
+    * @param rawUserArtistData
+    * @param rawArtistData
+    * @param rawArtistAlias
+    * @return
+    */
   def preparation(rawUserArtistData: Dataset[String],
                   rawArtistData: Dataset[String],
                   rawArtistAlias: Dataset[String]): RecommenderDataCleaned = {
@@ -45,6 +71,23 @@ class AudioRecommender(private val spark: SparkSession) {
     val artistAlias = this.buildArtistAlias(rawArtistAlias)
 
     RecommenderDataCleaned(userArtistDF, artistDF, artistAlias)
+  }
+
+  def model(countsTrainData: DataFrame): ALSModel = {
+    new ALS().
+      setSeed(Random.nextLong()).
+      setImplicitPrefs(true).
+      // contains feature vector of 10 values for each user and product in the model
+      // => large user-feature and product-feature matrices
+      setRank(10).
+      setRegParam(0.01).
+      setAlpha(1.0).
+      setMaxIter(5).
+      setUserCol("user").
+      setItemCol("artist").
+      setRatingCol("count").
+      setPredictionCol("prediction").
+      fit(countsTrainData)
   }
 
   def buildUserArtistData(rawUserArtistData: Dataset[String]): DataFrame = {
@@ -92,5 +135,15 @@ class AudioRecommender(private val spark: SparkSession) {
         Some((artist.toInt, alias.toInt))
       }
     }.collect().toMap
+  }
+
+  def buildCounts(rawUserArtistData: Dataset[String],
+                  artistAlias: Broadcast[Map[Int, Int]]): DataFrame = {
+    rawUserArtistData.map {line =>
+      val Array(userID, artistID, count) = line.split(' ').map(_.toInt)
+      // get artist alias if exists else get original artist
+      val finalArtistID = artistAlias.value.getOrElse(artistID, artistID)
+      (userID, finalArtistID, count)
+    }.toDF("user", "artist", "count")
   }
 }
