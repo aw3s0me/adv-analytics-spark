@@ -204,6 +204,35 @@ class AudioRecommender(private val spark: SparkSession) {
     cvData.unpersist()
   }
 
+  def recommend(
+                 rawUserArtistData: Dataset[String],
+                 rawArtistData: Dataset[String],
+                 rawArtistAlias: Dataset[String]): Unit = {
+
+    val bArtistAlias = spark.sparkContext.broadcast(buildArtistAlias(rawArtistAlias))
+    val allData = buildCounts(rawUserArtistData, bArtistAlias).cache()
+    // NOT POSSIBLE TO MAKE RECOMMENDATIONS FOR ALL USERS, just for 1 user
+    val model = new ALS().
+      setSeed(Random.nextLong()).
+      setImplicitPrefs(true).
+      setRank(10).setRegParam(1.0).setAlpha(40.0).setMaxIter(20).
+      setUserCol("user").setItemCol("artist").
+      setRatingCol("count").setPredictionCol("prediction").
+      fit(allData)
+    allData.unpersist()
+
+    val userID = 2093760
+    val topRecommendations = makeRecommendations(model, userID, 5)
+
+    val recommendedArtistIDs = topRecommendations.select("artist").as[Int].collect()
+    val artistByID = buildArtistData(rawArtistData)
+    artistByID.join(spark.createDataset(recommendedArtistIDs).toDF("id"), "id").
+      select("name").show()
+
+    model.userFactors.unpersist()
+    model.itemFactors.unpersist()
+  }
+
   def buildUserArtistData(rawUserArtistData: Dataset[String]): DataFrame = {
     rawUserArtistData.map { line =>
       val Array(user, artist, _*) = line.split(' ')
