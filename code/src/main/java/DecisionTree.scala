@@ -236,4 +236,84 @@ class DecisionTree(private val spark: SparkSession) {
     val trainAccuracy = multiclassEval.evaluate(bestModel.transform(trainData))
     println(trainAccuracy)
   }
+
+  /**
+    * To undo one-hot encoding
+    * @param data
+    * @return
+    */
+  def unencodeOneHot(data: DataFrame): DataFrame = {
+    val wildernessCols = (0 until 4).map(i => s"Wilderness_Area_$i").toArray
+
+    val wildernessAssembler = new VectorAssembler().
+      setInputCols(wildernessCols).
+      setOutputCol("wilderness")
+
+    val unhotUDF = udf((vec: Vector) => vec.toArray.indexOf(1.0).toDouble)
+
+    val withWilderness = wildernessAssembler.transform(data).
+      drop(wildernessCols:_*).
+      withColumn("wilderness", unhotUDF($"wilderness"))
+
+    val soilCols = (0 until 40).map(i => s"Soil_Type_$i").toArray
+
+    val soilAssembler = new VectorAssembler().
+      setInputCols(soilCols).
+      setOutputCol("soil")
+
+    soilAssembler.transform(withWilderness).
+      drop(soilCols:_*).
+      withColumn("soil", unhotUDF($"soil"))
+  }
+
+  def evaluateCategorical(trainData: DataFrame, testData: DataFrame): Unit = {
+    // transform one-hot encoded features back to categorical (from numerical binary to categorical)
+    val unencTrainData = unencodeOneHot(trainData)
+    val unencTestData = unencodeOneHot(testData)
+
+    val assembler = new VectorAssembler().
+      setInputCols(unencTrainData.columns.filter(_ != "Cover_Type")).
+      setOutputCol("featureVector")
+
+    val indexer = new VectorIndexer().
+      setMaxCategories(40).
+      setInputCol("featureVector").
+      setOutputCol("indexedVector")
+
+    val classifier = new DecisionTreeClassifier().
+      setSeed(Random.nextLong()).
+      setLabelCol("Cover_Type").
+      setFeaturesCol("indexedVector").
+      setPredictionCol("prediction")
+
+    val pipeline = new Pipeline().setStages(Array(assembler, indexer, classifier))
+
+    val paramGrid = new ParamGridBuilder().
+      addGrid(classifier.impurity, Seq("gini", "entropy")).
+      addGrid(classifier.maxDepth, Seq(1, 20)).
+      addGrid(classifier.maxBins, Seq(40, 300)).
+      addGrid(classifier.minInfoGain, Seq(0.0, 0.05)).
+      build()
+
+    val multiclassEval = new MulticlassClassificationEvaluator().
+      setLabelCol("Cover_Type").
+      setPredictionCol("prediction").
+      setMetricName("accuracy")
+
+    val validator = new TrainValidationSplit().
+      setSeed(Random.nextLong()).
+      setEstimator(pipeline).
+      setEvaluator(multiclassEval).
+      setEstimatorParamMaps(paramGrid).
+      setTrainRatio(0.9)
+
+    val validatorModel = validator.fit(unencTrainData)
+
+    val bestModel = validatorModel.bestModel
+
+    println(bestModel.asInstanceOf[PipelineModel].stages.last.extractParamMap)
+
+    val testAccuracy = multiclassEval.evaluate(bestModel.transform(unencTestData))
+    println(testAccuracy)
+  }
 }
