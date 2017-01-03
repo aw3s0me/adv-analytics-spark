@@ -50,6 +50,7 @@ object DecisionTree {
     val tree = new DecisionTree(spark)
 
     tree.simpleDecisionTree(trainData, testData)
+    tree.randomClassifier(trainData, testData)
   }
 }
 
@@ -126,5 +127,42 @@ class DecisionTree(private val spark: SparkSession) {
       orderBy("Cover_Type")
 
     confusionMatrix.show()
+  }
+
+  def classProbabilities(data: DataFrame): Array[Double] = {
+    // all number of elements in dataset
+    val total = data.count()
+    // count number of occurences of distinct categories.
+    // (e.g. category1: 20% of dataset, category2: 10% of dataset etc...)
+    data.groupBy("Cover_Type").count().
+      // order counts by category
+      orderBy("Cover_Type").
+      select("count").as[Double].
+      // to get probability we just divide num of occurences to total number
+      map(_ / total).
+      collect()
+  }
+
+  /**
+    * Current accuracy from simple decision tree is ok, but
+    * it is not clear is it good or bad
+    * => Randomly guessing a classification for each example
+    * would produce correct answer
+    * ----
+    * Pick class at random in proportion its prevalence in training set
+    * @param trainData
+    * @param testData
+    */
+  def randomClassifier(trainData: DataFrame, testData: DataFrame): Unit = {
+    // find probabilities for training dataset
+    val trainPriorProbabilities = classProbabilities(trainData)
+    // find probabilities for CV dataset
+    val testPriorProbabilities = classProbabilities(testData)
+    // calculate accuracy by finding a product of probabilities from training and CV datasets
+    // AND SUM UP such probabilities
+    val accuracy = trainPriorProbabilities.zip(testPriorProbabilities).map {
+      case (trainProb, cvProb) => trainProb * cvProb
+    }.sum
+    println(accuracy)
   }
 }
