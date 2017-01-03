@@ -8,7 +8,7 @@ import scala.util.Random
 /**
   * Created by akorovin on 03.01.2017.
   */
-object KMeans {
+object KMeansRun {
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder().getOrCreate()
 
@@ -44,7 +44,7 @@ object KMeans {
 
     data.cache()
 
-    val runKMeans = new KMeans(spark)
+    val runKMeans = new KMeansRun(spark)
   }
 }
 
@@ -52,7 +52,47 @@ object KMeans {
   * Building a system to detect anomalous network traffic
   * @param spark
   */
-class KMeans(private val spark: SparkSession) {
+class KMeansRun(private val spark: SparkSession) {
   import spark.implicits._
 
+  // Clustering, Take 0. Fitting without setting up number of clusters
+  def clusteringTake0(data: DataFrame): Unit = {
+    // exploring data set
+    // which labels present in the data and how many are there of each
+    // --- counts by label and sorts them by descending order (23 distinct labels)
+    // CONCLUSION => we need k = 23 clusters (because we have 23 different cases)
+    data.select("label").groupBy("label").count().orderBy($"count".desc).show(25)
+
+    // remove the three categorical value columns.
+    val numericOnly = data.drop("protocol_type", "service", "flag").cache()
+    // remaining are converted to a vector of features
+    val assembler = new VectorAssembler().
+      setInputCols(numericOnly.columns.filter(_ != "label")).
+      setOutputCol("featureVector")
+
+    // create KMeans model
+    // kmeans operates only on features (need to set features col)
+    // CURRENTLY we do no set number of clusters
+    val kmeans = new KMeans().
+      setSeed(Random.nextLong()).
+      setPredictionCol("cluster").
+      setFeaturesCol("featureVector")
+
+    val pipeline = new Pipeline().setStages(Array(assembler, kmeans))
+    val pipelineModel = pipeline.fit(numericOnly)
+    val kmeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+
+    // print out centroids. will print 2 centroids (k=2)
+    kmeansModel.clusterCenters.foreach(println)
+
+    val withCluster = pipelineModel.transform(numericOnly)
+    // count labels within each cluster
+    withCluster.select("cluster", "label").
+      groupBy("cluster", "label").count().
+      orderBy($"cluster", $"count".desc).
+      show(25)
+    // will print out that only one data point ended in cluster 1
+    // => clustering with k = 2 is unsufficient
+    numericOnly.unpersist()
+  }
 }
