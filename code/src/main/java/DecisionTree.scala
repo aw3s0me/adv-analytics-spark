@@ -165,4 +165,75 @@ class DecisionTree(private val spark: SparkSession) {
     }.sum
     println(accuracy)
   }
+
+  /**
+    * Choosing hyperparameters
+    * @param trainData
+    * @param testData
+    */
+  def evaluate(trainData: DataFrame, testData: DataFrame): Unit = {
+    val assembler = new VectorAssembler().
+      setInputCols(trainData.columns.filter(_ != "Cover_Type")).
+      setOutputCol("featureVector")
+
+    val classifier = new DecisionTreeClassifier().
+      setSeed(Random.nextLong()).
+      setLabelCol("Cover_Type").
+      setFeaturesCol("featureVector").
+      setPredictionCol("prediction")
+
+    val pipeline = new Pipeline().setStages(Array(assembler, classifier))
+
+    val paramGrid = new ParamGridBuilder().
+      // GINI - it is the probability that a randomly chosen classification of randomly chosen example is incorrect
+      // depends on proportion of examples of class i in subset
+
+      // NOTE - subset that contains only 1 class. has 0 entropy and gini = 0
+      // NOTE - low impurity is GOOD
+      addGrid(classifier.impurity, Seq("gini", "entropy")).
+      // maxDepth - simply limits the number of levels in decision tree
+      // NOTE: used to avoid overfitting
+      addGrid(classifier.maxDepth, Seq(1, 20)).
+      // Disadv: larger number of beans requires more processing time
+      // Adv: but may lead to more optimal solution
+      addGrid(classifier.maxBins, Seq(40, 300)).
+      addGrid(classifier.minInfoGain, Seq(0.0, 0.05)).
+      build()
+
+    val multiclassEval = new MulticlassClassificationEvaluator().
+      setLabelCol("Cover_Type").
+      setPredictionCol("prediction").
+      setMetricName("accuracy")
+
+    val validator = new TrainValidationSplit().
+      setSeed(Random.nextLong()).
+      setEstimator(pipeline).
+      setEvaluator(multiclassEval).
+      setEstimatorParamMaps(paramGrid).
+      setTrainRatio(0.9)
+
+    //spark.sparkContext.setLogLevel("DEBUG")
+    val validatorModel = validator.fit(trainData)
+    /*
+    DEBUG TrainValidationSplit: Got metric 0.6315930234779452 for model trained with {
+      dtc_ca0f064d06dd-impurity: gini,
+      dtc_ca0f064d06dd-maxBins: 10,
+      dtc_ca0f064d06dd-maxDepth: 1,
+      dtc_ca0f064d06dd-minInfoGain: 0.0
+    }.
+    */
+    //spark.sparkContext.setLogLevel("WARN")
+
+    val bestModel = validatorModel.bestModel
+
+    println(bestModel.asInstanceOf[PipelineModel].stages.last.extractParamMap)
+
+    println(validatorModel.validationMetrics.max)
+
+    val testAccuracy = multiclassEval.evaluate(bestModel.transform(testData))
+    println(testAccuracy)
+
+    val trainAccuracy = multiclassEval.evaluate(bestModel.transform(trainData))
+    println(trainAccuracy)
+  }
 }
