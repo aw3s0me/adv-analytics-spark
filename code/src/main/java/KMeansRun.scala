@@ -95,4 +95,56 @@ class KMeansRun(private val spark: SparkSession) {
     // => clustering with k = 2 is unsufficient
     numericOnly.unpersist()
   }
+
+  // Clustering, Take 1. fitting with setting up the number of centres
+  // but without maximum number of iterations
+  def clusteringScore0(data: DataFrame, k: Int): Double = {
+    val assembler = new VectorAssembler().
+      setInputCols(data.columns.filter(_ != "label")).
+      setOutputCol("featureVector")
+
+    val kmeans = new KMeans().
+      setSeed(Random.nextLong()).
+      setK(k).
+      setPredictionCol("cluster").
+      setFeaturesCol("featureVector")
+
+    val pipeline = new Pipeline().setStages(Array(assembler, kmeans))
+
+    val kmeansModel = pipeline.fit(data).stages.last.asInstanceOf[KMeansModel]
+    kmeansModel.computeCost(assembler.transform(data)) / data.count()
+  }
+
+  /**
+    * Setup also other parameters to compare with fitting
+    * @param data
+    * @param k
+    * @return
+    */
+  def clusteringScore1(data: DataFrame, k: Int): Double = {
+    val assembler = new VectorAssembler().
+      setInputCols(data.columns.filter(_ != "label")).
+      setOutputCol("featureVector")
+
+    val kmeans = new KMeans().
+      setSeed(Random.nextLong()).
+      setK(k).
+      setPredictionCol("cluster").
+      setFeaturesCol("featureVector").
+      setMaxIter(40).
+      setTol(1.0e-5)
+
+    val pipeline = new Pipeline().setStages(Array(assembler, kmeans))
+
+    val kmeansModel = pipeline.fit(data).stages.last.asInstanceOf[KMeansModel]
+    kmeansModel.computeCost(assembler.transform(data)) / data.count()
+  }
+
+  def clusteringTake1(data: DataFrame): Unit = {
+    val numericOnly = data.drop("protocol_type", "service", "flag").cache()
+    // (x to y by z) scala way to create collection between start and end with given step
+    (20 to 100 by 20).map(k => (k, clusteringScore0(numericOnly, k))).foreach(println)
+    (20 to 100 by 20).map(k => (k, clusteringScore1(numericOnly, k))).foreach(println)
+    numericOnly.unpersist()
+  }
 }
