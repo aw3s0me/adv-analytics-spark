@@ -147,4 +147,41 @@ class KMeansRun(private val spark: SparkSession) {
     (20 to 100 by 20).map(k => (k, clusteringScore1(numericOnly, k))).foreach(println)
     numericOnly.unpersist()
   }
+
+  // Clustering, Take 2. Feature normalization
+  def clusteringScore2(data: DataFrame, k: Int): Double = {
+    val assembler = new VectorAssembler().
+      setInputCols(data.columns.filter(_ != "label")).
+      setOutputCol("featureVector")
+
+    // trying to normalize feature (subract mean from each feature and divide by std)
+    val scaler = new StandardScaler()
+      .setInputCol("featureVector")
+      .setOutputCol("scaledFeatureVector")
+      .setWithStd(true)
+      // however subtracting mean has no effect on clustering
+      // because shifting was by the same amount in the same directions
+      // => Doesnt affect interpoint euclidean distances
+      .setWithMean(false)
+
+    val kmeans = new KMeans().
+      setSeed(Random.nextLong()).
+      setK(k).
+      setPredictionCol("cluster").
+      setFeaturesCol("scaledFeatureVector").
+      setMaxIter(40).
+      setTol(1.0e-5)
+
+    val pipeline = new Pipeline().setStages(Array(assembler, scaler, kmeans))
+    val pipelineModel = pipeline.fit(data)
+
+    val kmeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+    kmeansModel.computeCost(pipelineModel.transform(data)) / data.count()
+  }
+
+  def clusteringTake2(data: DataFrame): Unit = {
+    val numericOnly = data.drop("protocol_type", "service", "flag").cache()
+    (60 to 270 by 30).map(k => (k, clusteringScore2(numericOnly, k))).foreach(println)
+    numericOnly.unpersist()
+  }
 }
