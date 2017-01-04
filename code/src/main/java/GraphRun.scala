@@ -67,6 +67,32 @@ object GraphRun {
     val vertexRDD = vertices.rdd.map{ case Row(hash: Long, topic: String) => (hash, topic) }
     val topicGraph = Graph(vertexRDD, edges.rdd)
     topicGraph.cache()
+
+    // want to know whether or not it is connected
+    // in a connected graph it is possible to reach from one vertex to any other
+    // NOTE: if graph is not connected - better to divide it into separate components and treat individually
+    val connectedComponentGraph = topicGraph.connectedComponents()
+    // Each vertex is a tuple of (vertexId, component id)
+    val componentDF = connectedComponentGraph.vertices.toDF("vid", "cid")
+    // find a list of all connected components and their sizes (by grouping their component id)
+    val componentCounts = componentDF.groupBy("cid").count()
+    // if we look. first largest component contains 90% of all vertices
+    componentCounts.orderBy(desc("count")).show()
+
+    // need to analyze why other (smaller) components are separated
+    // => so we join vertices with original concept graph (original topicGraph with connected component graph)
+    val topicComponentDF = topicGraph.vertices.innerJoin(
+      connectedComponentGraph.vertices) {
+      // inner join requires that we provide a function on vertexID
+      // +++ and data contained inside of each of the two vertexRDD
+      (topicId, name, componentId) => (name, componentId.toLong)
+    }.values.toDF("topic", "cid")
+    // look component which was not connected
+    // TODO: insert our component id from df
+    topicComponentDF.where("cid = -6468702387578666337").show()
+    // we see the distribution of HIV topics
+    val hiv = spark.sql("SELECT * FROM topic_dist WHERE topic LIKE '%hiv%'")
+    hiv.show()
   }
 
   /**
