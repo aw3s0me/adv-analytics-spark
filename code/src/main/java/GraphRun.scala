@@ -23,9 +23,40 @@ object GraphRun {
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
-
+    // MEDLINE data.
+    // each entry is citation that contains multiple topics [Citation 1:M Topic]
     val medlineRaw: Dataset[String] = loadMedline(spark, "hdfs:///user/ds/medline")
     val medline: Dataset[Seq[String]] = medlineRaw.map(majorTopics).cache()
+
+    // get topics from tags
+    val topics = medline.flatMap(mesh => mesh).toDF("topic")
+    topics.createOrReplaceTempView("topics")
+    // calculate occurrences of topic (frequency) and order them
+    val topicDist = spark.sql("SELECT topic, COUNT(*) cnt FROM topics GROUP BY topic ORDER BY cnt DESC")
+    topicDist.show()
+    topicDist.createOrReplaceTempView("topic_dist")
+    // group by count and take 10 most frequent
+    spark.sql("SELECT cnt, COUNT(*) dist FROM topic_dist GROUP BY cnt ORDER BY dist DESC LIMIT 10").show()
+
+    // to create all combinations between medline topics
+    /**
+      * Usage of combinations:
+      * val list = List(1, 2, 3)
+        val combs = list.combinations(2)
+        combs.foreach(println)
+      * // returns List(1,2), List(1,3), List(2,3)
+      */
+    // NOTE: COMBINATIONS DEPENDS ON LIST ORDER
+    // => so need to sort list (use property sorted)
+    val topicPairs = medline.flatMap(_.sorted.combinations(2)).toDF("pairs")
+    topicPairs.createOrReplaceTempView("topic_pairs")
+    // count co-occurrences
+    val cooccurs = spark.sql("SELECT pairs, COUNT(*) cnt FROM topic_pairs GROUP BY pairs")
+    cooccurs.cache()
+
+    cooccurs.createOrReplaceTempView("cooccurs")
+    println("Number of unique co-occurrence pairs: " + cooccurs.count())
+    spark.sql("SELECT pairs, cnt FROM cooccurs ORDER BY cnt DESC LIMIT 10").show()
   }
 
   /**
