@@ -93,6 +93,26 @@ object GraphRun {
     // we see the distribution of HIV topics
     val hiv = spark.sql("SELECT * FROM topic_dist WHERE topic LIKE '%hiv%'")
     hiv.show()
+
+    // to get inside how graph is structured
+    // => better find degree of each vertex (number of edges that a particular vertex belongs to)
+    val degrees: VertexRDD[Int] = topicGraph.degrees.cache()
+    // calculate stats (mean, std, count, min-max) to see distribution of degrees
+    // NOTE: degrees have smaller number of entries
+    // WHY? some vertices have no edges
+    // ---
+    // ANALYSIS:
+    // mean (49) - average vertex connected only to small fraction
+    // max (3000) - there are some highly connected nodes
+    degrees.map(_._2).stats()
+
+    // look at the concepts
+    degrees.innerJoin(topicGraph.vertices) {
+      (topicId, degree, name) => (name, degree.toInt)
+    }.values.toDF("topic", "degree").
+      // order by degree to see the top connected vertices
+      orderBy(desc("degree")).show()
+
   }
 
   /**
