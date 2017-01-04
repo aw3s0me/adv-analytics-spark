@@ -128,6 +128,17 @@ object GraphRun {
     )
     // find stats (distribution) of new graph
     chiSquaredGraph.edges.map(x => x.attr).stats()
+    // EXPLANATION why 19.5
+    // 99.99 percentile of chi-sq distribution === 19.5 (x=19.5), where F_1(x) = 99.99
+    // with one degree of freedom (k == 1)
+    // FILTERING: use boolean to filter out
+    val interesting = chiSquaredGraph.subgraph(triplet => triplet.attr > 19.5)
+    val interestingComponentGraph = interesting.connectedComponents()
+    val icDF = interestingComponentGraph.vertices.toDF("vid", "cid")
+    val icCountDF = icDF.groupBy("cid").count()
+    icCountDF.count()
+    // overall: removed one third of all edges
+    icCountDF.orderBy(desc("count")).show()
   }
 
   /**
