@@ -25,6 +25,26 @@ object GraphRun {
     import spark.implicits._
 
     val medlineRaw: Dataset[String] = loadMedline(spark, "hdfs:///user/ds/medline")
+    val medline: Dataset[Seq[String]] = medlineRaw.map(majorTopics).cache()
+  }
+
+  /**
+    * Fetching only major articles (getting major tags)
+    * @param record
+    * @return
+    */
+  def majorTopics(record: String): Seq[String] = {
+    // elem is instance of Elem class (scala represents it as individual Node)
+    val elem = XML.loadString(record)
+    // operator '\\' - RETRIEVING NON-DIRECT CHILDREN
+    val dn = elem \\ "DescriptorName"
+    // 1. operator '\' - RETRIEVING DIRECT CHILDREN
+    // NOTE: ONLY WORKS WITH DIRECT CHILDREN
+    // 2. call text function to retrieve MeSH tags within each node
+    // 3. filter entries that are major (MajorTopicYN == 'Y')
+    // NOTE: need to preface attribute name with @ symbol (MajorTopicYN - is attribute)
+    val mt = dn.filter(n => (n \ "@MajorTopicYN").text == "Y")
+    mt.map(n => n.text)
   }
 
   /**
