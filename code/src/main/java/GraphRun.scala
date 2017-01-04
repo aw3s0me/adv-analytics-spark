@@ -113,6 +113,21 @@ object GraphRun {
       // order by degree to see the top connected vertices
       orderBy(desc("degree")).show()
 
+    // Calculation of chi-squared test
+    // T - total number of documents
+    val T = medline.count()
+    // create rdd from topic counts
+    val topicDistRdd = topicDist.map { case Row(topic: String, cnt: Long) => (hashId(topic), cnt) }.rdd
+    // create new graph from counts along with existing graph
+    val topicDistGraph = Graph(topicDistRdd, topicGraph.edges)
+    // need to combine data that is storead at both vertices
+    // USE data structure called EdgeTriplet[VD, ED]
+    // NOTE: returns new graph - edge attributes - are chi-sq test values
+    val chiSquaredGraph = topicDistGraph.mapTriplets(triplet =>
+      chiSq(triplet.attr, triplet.srcAttr, triplet.dstAttr, T)
+    )
+    // find stats (distribution) of new graph
+    chiSquaredGraph.edges.map(x => x.attr).stats()
   }
 
   /**
@@ -164,6 +179,30 @@ object GraphRun {
     */
   def hashId(str: String) = {
     Hashing.md5().hashString(str).asLong()
+  }
+
+  /**
+    * Calculation of chi-square test
+    * @param YY
+    * @param YB
+    * @param YA
+    * @param T
+    * @return
+    */
+  def chiSq(YY: Long, YB: Long, YA: Long, T: Long): Double = {
+    // create 2x2 table for any pair of concepts A and B
+    // ELEMENTS: YY, YN, NY, NN - represent raw counts of presence/absence of concepts A and B
+    // YA, NA - row sums for concept A
+    // YB, NB - row sums for concept B
+    // T - total number of documents
+    val NB = T - YB
+    val NA = T - YA
+    val YN = YA - YY
+    val NY = YB - YY
+    val NN = T - NY - YN - YY
+    // compute chi-square statistic from these values
+    val inner = math.abs(YY * NN - YN * NY) - T / 2.0
+    T * math.pow(inner, 2) / (YA * NA * YB * NB)
   }
 }
 
