@@ -1,14 +1,13 @@
 import edu.umd.cloud9.collection.XMLInputFormat
-
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
-import org.apache.hadoop.io.{Text, LongWritable}
+import com.google.common.hash.Hashing
+import org.apache.hadoop.io.{LongWritable, Text}
 import org.apache.hadoop.conf.Configuration
-
 import org.apache.spark.graphx._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Dataset, SparkSession, Row}
+import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.sql.functions._
 
 import scala.xml._
@@ -57,6 +56,17 @@ object GraphRun {
     cooccurs.createOrReplaceTempView("cooccurs")
     println("Number of unique co-occurrence pairs: " + cooccurs.count())
     spark.sql("SELECT pairs, cnt FROM cooccurs ORDER BY cnt DESC LIMIT 10").show()
+
+    val vertices = topics.map { case Row(topic: String) => (hashId(topic), topic) }.toDF("hash", "topic")
+    val edges = cooccurs.map { case Row(topics: Seq[_], cnt: Long) =>
+      // left vertex id must be smaller than right vertex id
+      // => we sort hashes
+      val ids = topics.map(_.toString).map(hashId).sorted
+      Edge(ids(0), ids(1), cnt)
+    }
+    val vertexRDD = vertices.rdd.map{ case Row(hash: Long, topic: String) => (hash, topic) }
+    val topicGraph = Graph(vertexRDD, edges.rdd)
+    topicGraph.cache()
   }
 
   /**
@@ -98,6 +108,16 @@ object GraphRun {
     val in = sc.newAPIHadoopFile(path, classOf[XMLInputFormat],
       classOf[LongWritable], classOf[Text], conf)
     in.map(line => line._2.toString).toDS()
+  }
+
+  /**
+    * Use Google Guava library to get hashes for each vertex
+    * (RDD[Long, String])
+    * @param str
+    * @return
+    */
+  def hashId(str: String) = {
+    Hashing.md5().hashString(str).asLong()
   }
 }
 
