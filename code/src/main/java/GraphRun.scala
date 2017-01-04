@@ -139,6 +139,18 @@ object GraphRun {
     icCountDF.count()
     // overall: removed one third of all edges
     icCountDF.orderBy(desc("count")).show()
+
+    // find degrees of filtered dataset
+    val interestingDegrees = interesting.degrees.cache()
+    // find their stats
+    // CONCLUSION: can see that biggest component was not divided into smaller components
+    // => CONNECTED GRAPH IS ROBUST TO NOISE!!
+    interestingDegrees.map(_._2).stats()
+    interestingDegrees.innerJoin(topicGraph.vertices) {
+      (topicId, degree, name) => (name, degree)
+    }.toDF("topic", "degree").orderBy(desc("degree")).show()
+
+    val avgCC = avgClusteringCoef(interesting)
   }
 
   /**
@@ -214,6 +226,26 @@ object GraphRun {
     // compute chi-square statistic from these values
     val inner = math.abs(YY * NN - YN * NY) - T / 2.0
     T * math.pow(inner, 2) / (YA * NA * YB * NB)
+  }
+
+  /**
+    * Method to calculate average clustering coefficient metric
+    * To show how dense is the graph
+    * @param graph
+    * @return
+    */
+  def avgClusteringCoef(graph: Graph[_, _]): Double = {
+    // returns a graph whose VertexRDD contains number of triangles for each vertex
+    val triCountGraph = graph.triangleCount()
+    // need to normalize these triangle counts by total number of possible triangles at each vertex
+    val maxTrisGraph = graph.degrees.mapValues(d => d * (d - 1) / 2.0)
+    // join vertexRDD of triangle counts rdd to vertexRdd of normalization terms
+    // to normalization term vertices rdd
+    val clusterCoefGraph = triCountGraph.vertices.innerJoin(maxTrisGraph) {
+      (vertexId, triCount, maxTris) => if (maxTris == 0) 0 else triCount / maxTris
+    }
+    // compute average value of clustering coefficient
+    clusterCoefGraph.map(_._2).sum() / graph.vertices.count()
   }
 }
 
