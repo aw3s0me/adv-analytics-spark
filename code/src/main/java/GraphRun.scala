@@ -150,7 +150,16 @@ object GraphRun {
       (topicId, degree, name) => (name, degree)
     }.toDF("topic", "degree").orderBy(desc("degree")).show()
 
+    // compute density graph metric - average clustering coefficent
     val avgCC = avgClusteringCoef(interesting)
+
+    // compute average shortest path length using Pregel
+    val paths = samplePathLengths(interesting)
+    paths.map(_._3).filter(_ > 0).stats()
+
+    // compute final stats in histogram
+    val hist = paths.map(_._3).countByValue()
+    hist.toSeq.sorted.foreach(println)
   }
 
   /**
@@ -246,6 +255,99 @@ object GraphRun {
     }
     // compute average value of clustering coefficient
     clusterCoefGraph.map(_._2).sum() / graph.vertices.count()
+  }
+
+  def samplePathLengths[V, E](graph: Graph[V, E], fraction: Double = 0.02)
+  : RDD[(VertexId, VertexId, Int)] = {
+    val replacement = false
+    // select 2% (fraction = 0.02) of VertexID values for our sample without replacement
+    // 1729L - is a seed for random num generator
+    val sample = graph.vertices.map(v => v._1).sample(
+      replacement, fraction, 1729L)
+    val ids = sample.collect().toSet
+    // need to create new Graph object whose vertex Map[VertexId, Int] values:
+    // are only nonempty if vertex is a member of sampled IDs
+    val mapGraph = graph.mapVertices((id, v) => {
+      if (ids.contains(id)) {
+        Map(id -> 0)
+      } else {
+        Map[VertexId, Int]()
+      }
+    })
+
+    // initial message is an empty map
+    val start = Map[VertexId, Int]()
+    // can call pregel method followed by update, iterate and mergeMaps
+    // to execute during each iteration
+    val res = mapGraph.ops.pregel(start)(update, iterate, mergeMaps)
+    // once it completes we can flatMap the vertices to extract tuples (VId, VId, Int)
+    // - values that represent the unique path lengths that were computed
+    res.vertices.flatMap { case (id, m) =>
+      m.map { case (k, v) =>
+        if (id < k) {
+          (id, k, v)
+        } else {
+          (k, id, v)
+        }
+      }
+    }.distinct().cache()
+  }
+
+  /**
+    * Used to merge the information from the new messages
+    * into the state of the vertex
+    * NOTE: both state and message are of the same type
+    * @param m1 state of vertex
+    * @param m2 message
+    * @return
+    */
+  def mergeMaps(m1: Map[VertexId, Int], m2: Map[VertexId, Int]): Map[VertexId, Int] = {
+    def minThatExists(k: VertexId): Int = {
+      math.min(
+        m1.getOrElse(k, Int.MaxValue),
+        m2.getOrElse(k, Int.MaxValue))
+    }
+    // merge state and message into new state
+    // and retain smallest value associated with any vertexId entries that occur in both maps
+    (m1.keySet ++ m2.keySet).map(k => (k, minThatExists(k))).toMap
+  }
+
+  /**
+    * Wrapper arount mergeMaps function
+    * @param id
+    * @param state
+    * @param msg
+    * @return
+    */
+  def update(id: VertexId, state: Map[VertexId, Int], msg: Map[VertexId, Int])
+  : Map[VertexId, Int] = {
+    mergeMaps(state, msg)
+  }
+
+
+  def checkIncrement(a: Map[VertexId, Int], b: Map[VertexId, Int], bid: VertexId)
+  : Iterator[(VertexId, Map[VertexId, Int])] = {
+    // each vertex should increment the value of each key in its current Map{vertexId, int] by one
+    val aplus = a.map { case (v, d) => v -> (d + 1) }
+    // combine the incremented map values with the values from its neighbor using mergeMaps
+    if (b != mergeMaps(aplus, b)) {
+      // send the result of mergemaps to neighboring vertex
+      // if it is different from neighbors internal map
+      //
+      Iterator((bid, aplus))
+    } else {
+      Iterator.empty
+    }
+  }
+
+  /**
+    * Used for performing message updates at each pregel iteration
+    * @param e
+    * @return
+    */
+  def iterate(e: EdgeTriplet[Map[VertexId, Int], _]): Iterator[(VertexId, Map[VertexId, Int])] = {
+    checkIncrement(e.srcAttr, e.dstAttr, e.dstId) ++
+      checkIncrement(e.dstAttr, e.srcAttr, e.srcId)
   }
 }
 
