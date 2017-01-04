@@ -170,6 +170,11 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-mllib_${scala.minor.version}</artifactId>
         </dependency>
+        <dependency>
+            <groupId>edu.umd</groupId>
+            <artifactId>cloud9</artifactId>
+            <version>1.5.0</version>
+        </dependency>
     </dependencies>
 
     <build>

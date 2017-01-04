@@ -315,4 +315,31 @@ class KMeansRun(private val spark: SparkSession) {
       orderBy("cluster", "label")
     countByClusterLabel.show()
   }
+
+  // Detect anomalies. Final anomaly detector.
+  def buildAnomalyDetector(data: DataFrame): Unit = {
+    val pipelineModel = fitPipeline4(data, 180)
+
+    val kMeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+    val centroids = kMeansModel.clusterCenters
+
+    val clustered = pipelineModel.transform(data)
+    // choose threshold 100-th farthest data point from among known data
+    val threshold = clustered.
+      select("cluster", "scaledFeatureVector").as[(Int, Vector)].
+      map { case (cluster, vec) => Vectors.sqdist(centroids(cluster), vec) }.
+      orderBy($"value".desc).take(100).last
+
+    val originalCols = data.columns
+    // takes new data point. if new data points distance exceeds threshold
+    // => IT IS ANOMALOUS
+    val anomalies = clustered.filter { row =>
+      val cluster = row.getAs[Int]("cluster")
+      val vec = row.getAs[Vector]("scaledFeatureVector")
+      // apply this threshold to all new arriving data
+      Vectors.sqdist(centroids(cluster), vec) >= threshold
+    }.select(originalCols.head, originalCols.tail:_*)
+
+    println(anomalies.first())
+  }
 }
